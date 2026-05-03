@@ -1,0 +1,108 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #ffffff;
+  --bg2: #f7f7f5;
+  --bg3: #efefec;
+  --text: #1a1a1a;
+  --text2: #6b6b6b;
+  --text3: #a0a0a0;
+  --border: rgba(0,0,0,0.1);
+  --border2: rgba(0,0,0,0.18);
+  --green: #3B6D11; --green-bg: #EAF3DE;
+  --amber: #854F0B; --amber-bg: #FAEEDA;
+  --red: #A32D2D; --red-bg: #FCEBEB;
+  --blue: #185FA5; --blue-bg: #E6F1FB;
+  --radius: 10px;
+  --radius-sm: 7px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1c1e; --bg2: #2c2c2e; --bg3: #3a3a3c;
+    --text: #f0f0f0; --text2: #a0a0a0; --text3: #6b6b6b;
+    --border: rgba(255,255,255,0.1); --border2: rgba(255,255,255,0.18);
+    --green: #9FE1CB; --green-bg: #085041;
+    --amber: #FAC775; --amber-bg: #633806;
+    --red: #F09595; --red-bg: #501313;
+    --blue: #85B7EB; --blue-bg: #0C447C;
+  }
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  min-height: 100dvh;
+}
+
+#root { min-height: 100dvh; }
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--text);
+  border: 0.5px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  outline: none;
+  width: 100%;
+  transition: border-color 0.15s;
+}
+input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(56,138,221,0.15); }
+input[type="date"] { width: auto; }
+input[type="number"] { width: auto; }
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  background: var(--bg);
+  color: var(--text);
+  border: 0.5px solid var(--border2);
+  border-radius: var(--radius-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.08s;
+  white-space: nowrap;
+}
+button:hover { background: var(--bg2); }
+button:active { transform: scale(0.97); }
+button:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+button.primary {
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+button.primary:hover { opacity: 0.85; }
+
+.card {
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+}
+
+.surface {
+  background: var(--bg2);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+}
+
+.tag {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  min-width: 42px;
+}
+.tag .tag-label { font-size: 9px; font-weight: 600; letter-spacing: 0.03em; line-height: 1.2; }
+.tag .tag-val { font-size: 12px; font-weight: 600; line-height: 1.3; }
+.tag.kcal { background: var(--blue-bg); color: var(--blue); }
+.tag.protein { background: var(--green-bg); color: var(--green); }
+.tag.fat { background: var(--amber-bg); color: var(--amber); }
+.tag.carbs { background: var(--red-bg); color: var(--red); }
