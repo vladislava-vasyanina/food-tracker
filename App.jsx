@@ -45,26 +45,62 @@ const sumK = (items = []) => items.reduce(
 )
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
+async function fetchPageHTML(url) {
+  // Try multiple CORS proxies in sequence
+  const proxies = [
+    `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  ]
+  for (const proxy of proxies) {
+    try {
+      const r = await fetch(proxy, { signal: AbortSignal.timeout(10000) })
+      if (!r.ok) continue
+      const data = await r.json().catch(() => null)
+      // allorigins returns { contents: '...' }
+      if (data?.contents) return data.contents
+      // corsproxy returns raw text
+      const text = await r.text().catch(() => null)
+      if (text && text.length > 100) return text
+    } catch { continue }
+  }
+  throw new Error('Could not fetch page')
+}
+
 async function parseURL(url) {
+  // Step 1: fetch raw HTML via CORS proxy
+  const html = await fetchPageHTML(url)
+
+  // Strip heavy tags to save tokens, keep text content
+  const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<svg[\s\S]*?<\/svg>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s{3,}/g, '  ')
+    .slice(0, 12000) // limit to ~3k tokens
+
+  // Step 2: ask Claude to extract nutrition facts from HTML text
   const r = await fetch(API, {
     method: 'POST',
     headers: HEADERS,
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 1000,
-      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      max_tokens: 500,
       messages: [{
         role: 'user',
-        content: `Fetch this supermarket product page and extract nutrition facts: ${url}\n\nReturn ONLY valid JSON (no markdown, no extra text):\n{"name":"product name","brand":"brand or empty string","per100g":{"kcal":0,"protein":0,"fat":0,"carbs":0,"fiber":0},"url":"${url}"}`
+        content: `Extract nutrition facts from this supermarket product page text. The URL was: ${url}\n\nPage text:\n${stripped}\n\nReturn ONLY valid JSON, no markdown, no extra text:\n{"name":"product name in original language","brand":"brand name or empty string","per100g":{"kcal":0,"protein":0,"fat":0,"carbs":0,"fiber":0},"url":"${url}"}\n\nIf you cannot find nutrition info, still return valid JSON with zeros.`
       }]
     })
   })
-  if (!r.ok) throw new Error(`HTTP ${r.status}`)
+  if (!r.ok) throw new Error(`API HTTP ${r.status}`)
   const d = await r.json()
   const text = d.content.filter(b => b.type === 'text').map(b => b.text).join('')
   const s = text.indexOf('{'), e = text.lastIndexOf('}')
   if (s === -1 || e === -1) throw new Error('No JSON in response')
-  return { ...JSON.parse(text.slice(s, e + 1)), id: crypto.randomUUID() }
+  const parsed = JSON.parse(text.slice(s, e + 1))
+  if (!parsed.name) throw new Error('No product name found')
+  return { ...parsed, id: crypto.randomUUID() }
 }
 
 async function aiMatch(query, products) {
