@@ -45,43 +45,57 @@ const sumK = (items = []) => items.reduce(
 )
 
 // ─── API helpers ──────────────────────────────────────────────────────────────
-async function fetchPageHTML(url) {
-  // Try multiple CORS proxies in sequence
-  const proxies = [
-    `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-    `https://corsproxy.io/?${encodeURIComponent(url)}`,
-  ]
-  for (const proxy of proxies) {
-    try {
-      const r = await fetch(proxy, { signal: AbortSignal.timeout(10000) })
-      if (!r.ok) continue
-      const data = await r.json().catch(() => null)
-      // allorigins returns { contents: '...' }
-      if (data?.contents) return data.contents
-      // corsproxy returns raw text
-      const text = await r.text().catch(() => null)
-      if (text && text.length > 100) return text
-    } catch { continue }
-  }
-  throw new Error('Could not fetch page')
+
+// Strategy 1: Open Food Facts by barcode (free, instant, no auth needed)
+// Works great for Intermarché — barcode is in the URL
+async function tryOpenFoodFacts(url) {
+  const match = url.match(/\/(\d{8,14})(?:\/|$|\?)/)
+  if (!match) return null
+  const barcode = match[1]
+  try {
+    const r = await fetch(`https://world.openfoodfacts.org/api/v0/product/${barcode}.json`)
+    if (!r.ok) return null
+    const data = await r.json()
+    if (data.status !== 1 || !data.product) return null
+    const p = data.product
+    const n = p.nutriments || {}
+    return {
+      id: crypto.randomUUID(),
+      name: p.product_name_pt || p.product_name || p.product_name_en || 'Produto',
+      brand: p.brands || '',
+      url,
+      per100g: {
+        kcal: Math.round(n['energy-kcal_100g'] || n['energy_100g'] / 4.184 || 0),
+        protein: +(n.proteins_100g || 0).toFixed(1),
+        fat: +(n.fat_100g || 0).toFixed(1),
+        carbs: +(n.carbohydrates_100g || 0).toFixed(1),
+        fiber: +(n.fiber_100g || 0).toFixed(1),
+      }
+    }
+  } catch { return null }
 }
 
-async function parseURL(url) {
-  // Step 1: fetch raw HTML via CORS proxy
-  const html = await fetchPageHTML(url)
+// Strategy 2: Fetch via our Vercel proxy, then Claude parses the HTML
+async function tryProxyParse(url) {
+  const proxyUrl = `/api/parse?url=${encodeURIComponent(url)}`
+  const r = await fetch(proxyUrl, { signal: AbortSignal.timeout(15000) })
+  if (!r.ok) throw new Error(`Proxy error ${r.status}`)
+  const { html, error } = await r.json()
+  if (error) throw new Error(error)
+  if (!html) throw new Error('Empty response')
 
-  // Strip heavy tags to save tokens, keep text content
-  const stripped = html
+  // Strip HTML tags, keep text
+  const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<svg[\s\S]*?<\/svg>/gi, '')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
     .replace(/\s{3,}/g, '  ')
-    .slice(0, 12000) // limit to ~3k tokens
+    .slice(0, 14000)
 
-  // Step 2: ask Claude to extract nutrition facts from HTML text
-  const r = await fetch(API, {
+  const r2 = await fetch(API, {
     method: 'POST',
     headers: HEADERS,
     body: JSON.stringify({
@@ -89,18 +103,27 @@ async function parseURL(url) {
       max_tokens: 500,
       messages: [{
         role: 'user',
-        content: `Extract nutrition facts from this supermarket product page text. The URL was: ${url}\n\nPage text:\n${stripped}\n\nReturn ONLY valid JSON, no markdown, no extra text:\n{"name":"product name in original language","brand":"brand name or empty string","per100g":{"kcal":0,"protein":0,"fat":0,"carbs":0,"fiber":0},"url":"${url}"}\n\nIf you cannot find nutrition info, still return valid JSON with zeros.`
+        content: `Extract nutrition facts from this supermarket product page. URL: ${url}\n\nPage text:\n${text}\n\nReturn ONLY valid JSON, no markdown:\n{"name":"product name","brand":"brand or empty string","per100g":{"kcal":0,"protein":0,"fat":0,"carbs":0,"fiber":0},"url":"${url}"}\n\nAll numeric values per 100g. If no nutrition info found, return kcal:0 but still return valid JSON with the product name.`
       }]
     })
   })
-  if (!r.ok) throw new Error(`API HTTP ${r.status}`)
-  const d = await r.json()
-  const text = d.content.filter(b => b.type === 'text').map(b => b.text).join('')
-  const s = text.indexOf('{'), e = text.lastIndexOf('}')
-  if (s === -1 || e === -1) throw new Error('No JSON in response')
-  const parsed = JSON.parse(text.slice(s, e + 1))
+  if (!r2.ok) throw new Error(`Claude API error ${r2.status}`)
+  const d = await r2.json()
+  const responseText = d.content.filter(b => b.type === 'text').map(b => b.text).join('')
+  const s = responseText.indexOf('{'), e = responseText.lastIndexOf('}')
+  if (s === -1 || e === -1) throw new Error('No JSON in Claude response')
+  const parsed = JSON.parse(responseText.slice(s, e + 1))
   if (!parsed.name) throw new Error('No product name found')
-  return { ...parsed, id: crypto.randomUUID() }
+  return { ...parsed, id: crypto.randomUUID(), url }
+}
+
+async function parseURL(url) {
+  // Try Open Food Facts first (fast, free, works for barcoded products)
+  const offResult = await tryOpenFoodFacts(url)
+  if (offResult && offResult.per100g.kcal > 0) return offResult
+
+  // Fall back to proxy + Claude
+  return await tryProxyParse(url)
 }
 
 async function aiMatch(query, products) {
