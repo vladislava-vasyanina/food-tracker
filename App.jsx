@@ -4,6 +4,14 @@ import { useState, useEffect, useRef } from 'react'
 const API = 'https://api.anthropic.com/v1/messages'
 const MODEL = 'claude-sonnet-4-20250514'
 const FAT_KCAL = 7700
+const KEY = import.meta.env.VITE_ANTHROPIC_KEY || ''
+
+const HEADERS = {
+  'Content-Type': 'application/json',
+  'x-api-key': KEY,
+  'anthropic-version': '2023-06-01',
+  'anthropic-dangerous-direct-browser-access': 'true',
+}
 
 // ─── storage (localStorage) ───────────────────────────────────────────────────
 const db = {
@@ -40,7 +48,7 @@ const sumK = (items = []) => items.reduce(
 async function parseURL(url) {
   const r = await fetch(API, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: HEADERS,
     body: JSON.stringify({
       model: MODEL,
       max_tokens: 1000,
@@ -63,7 +71,7 @@ async function aiMatch(query, products) {
   const list = products.map((p, i) => `${i}. ${p.name}${p.brand ? ' (' + p.brand + ')' : ''}`).join('\n')
   const r = await fetch(API, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: HEADERS,
     body: JSON.stringify({
       model: MODEL, max_tokens: 50,
       messages: [{ role: 'user', content: `User typed: "${query}"\n\nProducts:\n${list}\n\nReturn ONLY the index number of the best match (consider synonyms, abbreviations, translations). Just one integer, or -1 if no match.` }]
