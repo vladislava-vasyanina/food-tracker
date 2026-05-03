@@ -59,17 +59,23 @@ async function tryOpenFoodFacts(url) {
     if (data.status !== 1 || !data.product) return null
     const p = data.product
     const n = p.nutriments || {}
+
+    // energy can be stored in multiple fields
+    let kcal = n['energy-kcal_100g'] || n['energy-kcal'] || 0
+    if (!kcal && n['energy_100g']) kcal = Math.round(n['energy_100g'] / 4.184)
+    if (!kcal && n['energy-kj_100g']) kcal = Math.round(n['energy-kj_100g'] / 4.184)
+
     return {
       id: crypto.randomUUID(),
-      name: p.product_name_pt || p.product_name || p.product_name_en || 'Produto',
+      name: p.product_name_pt || p.product_name || p.product_name_en || p.abbreviated_product_name || 'Produto',
       brand: p.brands || '',
       url,
       per100g: {
-        kcal: Math.round(n['energy-kcal_100g'] || n['energy_100g'] / 4.184 || 0),
-        protein: +(n.proteins_100g || 0).toFixed(1),
-        fat: +(n.fat_100g || 0).toFixed(1),
-        carbs: +(n.carbohydrates_100g || 0).toFixed(1),
-        fiber: +(n.fiber_100g || 0).toFixed(1),
+        kcal: Math.round(kcal),
+        protein: +(n.proteins_100g || n.proteins || 0).toFixed(1),
+        fat: +(n.fat_100g || n.fat || 0).toFixed(1),
+        carbs: +(n.carbohydrates_100g || n.carbohydrates || 0).toFixed(1),
+        fiber: +(n.fiber_100g || n.fiber || 0).toFixed(1),
       }
     }
   } catch { return null }
@@ -118,11 +124,11 @@ async function tryProxyParse(url) {
 }
 
 async function parseURL(url) {
-  // Try Open Food Facts first (fast, free, works for barcoded products)
+  // Try Open Food Facts first (fast, free, works for barcoded products like Intermarché)
   const offResult = await tryOpenFoodFacts(url)
-  if (offResult && offResult.per100g.kcal > 0) return offResult
+  if (offResult) return offResult  // ← return even if kcal=0, OFF found the product
 
-  // Fall back to proxy + Claude
+  // Fall back to proxy + Claude for sites without barcode in URL
   return await tryProxyParse(url)
 }
 
