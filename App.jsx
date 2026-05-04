@@ -207,6 +207,7 @@ async function searchByName(query) {
     .filter(p => p.name)
 }
 
+async function aiMatch(query, products) {
   const list = products.map((p, i) => `${i}. ${p.name}${p.brand ? ' (' + p.brand + ')' : ''}`).join('\n')
   const r = await fetch(API, {
     method: 'POST',
