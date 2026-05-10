@@ -1,6 +1,18 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
+import { createClient } from '@supabase/supabase-js'
 
-// ─── constants ────────────────────────────────────────────────────────────────
+// ─── Supabase ────────────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://jtajdwbytuperojgxlkr.supabase.co'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp0YWpkd2J5dHVwZXJvamd4bGtyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg0MTYxODYsImV4cCI6MjA5Mzk5MjE4Nn0.uRhDmXT8QBwW8xMFPq4QAtpg29mlqulZAN2hysoONok'
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+
+// ─── Supabase helpers ─────────────────────────────────────────────────────────
+const rowToProduct = (r) => ({
+  id: r.id, name: r.name, brand: r.brand || '', url: r.url || '',
+  per100g: { kcal: r.kcal, protein: r.protein, fat: r.fat, carbs: r.carbs, fiber: r.fiber || 0 }
+})
+
+// ─── Claude API constants ─────────────────────────────────────────────────────
 const API = 'https://api.anthropic.com/v1/messages'
 const MODEL = 'claude-sonnet-4-6'
 const FAT_KCAL = 7700
@@ -11,20 +23,6 @@ const HEADERS = {
   'x-api-key': KEY,
   'anthropic-version': '2023-06-01',
   'anthropic-dangerous-direct-browser-access': 'true',
-}
-
-// ─── storage (localStorage) ───────────────────────────────────────────────────
-const db = {
-  get: (key) => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null } catch { return null } },
-  set: (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)) } catch(e) { console.error(e) } },
-  listKeys: (prefix) => {
-    const keys = []
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i)
-      if (k && k.startsWith(prefix)) keys.push(k)
-    }
-    return keys
-  }
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -895,7 +893,7 @@ function MonthTab({ dayData }) {
 }
 
 // ─── SETTINGS TAB ─────────────────────────────────────────────────────────────
-function SettingsTab({ targets, onSaveTargets }) {
+function SettingsTab({ targets, onSaveTargets, onLogout, userEmail }) {
   const [t, setT] = useState({ ...targets })
   const [saved, setSaved] = useState(false)
 
@@ -921,7 +919,14 @@ function SettingsTab({ targets, onSaveTargets }) {
         </div>
         <button onClick={save} className="primary" style={{ marginTop: 14 }}>{saved ? '✓ Сохранено' : 'Сохранить'}</button>
       </div>
-      <div className="surface">
+
+      <div className="surface" style={{ marginTop: 10 }}>
+        <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Аккаунт</p>
+        <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 12 }}>{userEmail}</p>
+        <button onClick={onLogout} style={{ fontSize: 13, color: 'var(--red)', borderColor: 'var(--red)' }}>Выйти из аккаунта</button>
+      </div>
+
+      <div className="surface" style={{ marginTop: 10 }}>
         <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>О приложении</p>
         <p style={{ fontSize: 12, color: 'var(--text2)', lineHeight: 1.7 }}>
           КБЖУ Трекер — персональный дневник питания.<br />
@@ -930,6 +935,61 @@ function SettingsTab({ targets, onSaveTargets }) {
           1 кг жира = 7 700 ккал.
         </p>
       </div>
+    </div>
+  )
+}
+
+// ─── AUTH SCREEN ──────────────────────────────────────────────────────────────
+function AuthScreen() {
+  const [email, setEmail] = useState('')
+  const [sent, setSent] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+
+  const send = async () => {
+    if (!email.trim()) return
+    setLoading(true); setErr('')
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { emailRedirectTo: window.location.origin }
+    })
+    if (error) setErr(error.message)
+    else setSent(true)
+    setLoading(false)
+  }
+
+  return (
+    <div style={{ maxWidth: 400, margin: '0 auto', minHeight: '100dvh', display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '2rem' }}>
+      <div style={{ fontSize: 32, textAlign: 'center', marginBottom: 12 }}>🥗</div>
+      <h1 style={{ fontSize: 22, fontWeight: 600, textAlign: 'center', marginBottom: 6 }}>КБЖУ Трекер</h1>
+      <p style={{ fontSize: 13, color: 'var(--text2)', textAlign: 'center', marginBottom: 32 }}>Персональный дневник питания</p>
+
+      {!sent ? (
+        <div className="card">
+          <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Войти или зарегистрироваться</p>
+          <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14 }}>
+            Введи email — пришлём ссылку для входа. Пароль не нужен.
+          </p>
+          <input
+            type="email" value={email} onChange={e => setEmail(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && send()}
+            placeholder="твой@email.com" autoFocus style={{ width: '100%', marginBottom: 10 }}
+          />
+          {err && <p style={{ fontSize: 12, color: 'var(--red)', marginBottom: 8 }}>{err}</p>}
+          <button onClick={send} disabled={loading || !email.trim()} className="primary" style={{ width: '100%' }}>
+            {loading ? 'Отправляю...' : 'Получить ссылку для входа'}
+          </button>
+        </div>
+      ) : (
+        <div className="card" style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 40, marginBottom: 12 }}>📬</div>
+          <p style={{ fontWeight: 500, marginBottom: 8 }}>Письмо отправлено!</p>
+          <p style={{ fontSize: 13, color: 'var(--text2)', lineHeight: 1.6 }}>
+            Проверь почту <strong>{email}</strong> и нажми на ссылку в письме — она откроет приложение автоматически.
+          </p>
+          <button onClick={() => setSent(false)} style={{ marginTop: 16, fontSize: 13 }}>← Другой email</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -945,38 +1005,120 @@ const TABS = [
 ]
 
 export default function App() {
+  const [session, setSession] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [tab, setTab] = useState('today')
   const [products, setProducts] = useState([])
   const [dayData, setDayData] = useState({})
   const [targets, setTargets] = useState(DEFAULT_TARGETS)
-  const [ready, setReady] = useState(false)
+  const [dataReady, setDataReady] = useState(false)
 
+  // ── Auth ───────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const prods = db.get('products') || []
-    setProducts(prods)
-    const tgts = db.get('targets')
-    if (tgts) setTargets(tgts)
-    const days = {}
-    db.listKeys('day:').forEach(k => { const d = db.get(k); if (d) days[k.replace('day:', '')] = d })
-    setDayData(days)
-    setReady(true)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session); setAuthLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setSession(session)
+    })
+    return () => subscription.unsubscribe()
   }, [])
 
-  const saveProducts = (p) => { setProducts(p); db.set('products', p) }
-  const saveDayData = (date, data) => { setDayData(prev => ({ ...prev, [date]: data })); db.set(`day:${date}`, data) }
-  const saveTargets = (t) => { setTargets(t); db.set('targets', t) }
+  // ── Load data when logged in ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!session) return
+    const uid = session.user.id
+    setDataReady(false)
 
-  if (!ready) return (
+    Promise.all([
+      // products
+      supabase.from('products').select('*').eq('user_id', uid).order('created_at')
+        .then(({ data }) => { if (data) setProducts(data.map(rowToProduct)) }),
+
+      // day logs — last 3 months
+      supabase.from('day_logs').select('*').eq('user_id', uid)
+        .gte('date', new Date(Date.now() - 90 * 864e5).toISOString().split('T')[0])
+        .then(({ data }) => {
+          const days = {}
+          if (data) data.forEach(r => { days[r.date] = { items: r.items || [], burned: r.burned_kcal || 0 } })
+          setDayData(days)
+        }),
+
+      // settings
+      supabase.from('user_settings').select('*').eq('user_id', uid).maybeSingle()
+        .then(({ data }) => {
+          if (data) setTargets({ kcal: data.target_kcal, protein: data.target_protein, fat: data.target_fat, carbs: data.target_carbs })
+        }),
+    ]).then(() => setDataReady(true))
+  }, [session])
+
+  // ── Save functions ─────────────────────────────────────────────────────────
+  const saveProducts = async (newProds) => {
+    const uid = session.user.id
+    const oldIds = new Set(products.map(p => p.id))
+    const newIds = new Set(newProds.map(p => p.id))
+
+    const added = newProds.filter(p => !oldIds.has(p.id))
+    const removed = products.filter(p => !newIds.has(p.id))
+
+    for (const p of added) {
+      await supabase.from('products').insert({
+        id: p.id, user_id: uid, name: p.name, brand: p.brand || '', url: p.url || '',
+        kcal: p.per100g.kcal, protein: p.per100g.protein, fat: p.per100g.fat,
+        carbs: p.per100g.carbs, fiber: p.per100g.fiber || 0,
+      })
+    }
+    for (const p of removed) {
+      await supabase.from('products').delete().eq('id', p.id)
+    }
+    setProducts(newProds)
+  }
+
+  const saveDayData = async (date, data) => {
+    const uid = session.user.id
+    setDayData(prev => ({ ...prev, [date]: data }))
+    await supabase.from('day_logs').upsert(
+      { user_id: uid, date, items: data.items, burned_kcal: data.burned || 0, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,date' }
+    )
+  }
+
+  const saveTargets = async (t) => {
+    const uid = session.user.id
+    setTargets(t)
+    await supabase.from('user_settings').upsert({
+      user_id: uid, target_kcal: t.kcal, target_protein: t.protein,
+      target_fat: t.fat, target_carbs: t.carbs,
+    })
+  }
+
+  const logout = () => supabase.auth.signOut()
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  if (authLoading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100dvh', color: 'var(--text2)', fontSize: 14 }}>
       Загрузка...
     </div>
   )
 
+  if (!session) return <AuthScreen />
+
+  if (!dataReady) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100dvh', color: 'var(--text2)', fontSize: 14 }}>
+      Загружаю данные...
+    </div>
+  )
+
   return (
     <div style={{ maxWidth: 540, margin: '0 auto', minHeight: '100dvh', background: 'var(--bg)' }}>
-      {/* header */}
       <div style={{ padding: '18px 20px 0', borderBottom: '0.5px solid var(--border)' }}>
-        <h1 style={{ fontSize: 18, fontWeight: 600, marginBottom: 14 }}>КБЖУ Трекер</h1>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <h1 style={{ fontSize: 18, fontWeight: 600 }}>КБЖУ Трекер</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 12, color: 'var(--text2)' }}>{session.user.email}</span>
+            <button onClick={logout} style={{ fontSize: 11, padding: '3px 8px' }}>Выйти</button>
+          </div>
+        </div>
         <div style={{ display: 'flex', gap: 0, overflowX: 'auto', scrollbarWidth: 'none' }}>
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)} style={{
@@ -988,13 +1130,12 @@ export default function App() {
         </div>
       </div>
 
-      {/* content */}
       <div style={{ padding: '20px 20px 80px' }}>
         {tab === 'today' && <TodayTab dayData={dayData} onSave={saveDayData} targets={targets} />}
         {tab === 'log' && <LogTab products={products} dayData={dayData} onSave={saveDayData} />}
         {tab === 'month' && <MonthTab dayData={dayData} />}
         {tab === 'products' && <ProductsTab products={products} onSave={saveProducts} />}
-        {tab === 'settings' && <SettingsTab targets={targets} onSaveTargets={saveTargets} />}
+        {tab === 'settings' && <SettingsTab targets={targets} onSaveTargets={saveTargets} onLogout={logout} userEmail={session.user.email} />}
       </div>
     </div>
   )
