@@ -255,66 +255,53 @@ function BarRow({ label, value, target, colorClass }) {
 
 // ─── PRODUCTS TAB ─────────────────────────────────────────────────────────────
 function ProductsTab({ products, onSave }) {
-  const [mode, setMode] = useState('main') // main | photo-confirm | manual | url | search
+  const [mode, setMode] = useState('main') // main | photo | search | manual
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const fileRef = useState(null)
 
-  // photo flow state
+  // photo flow
   const [photoPreview, setPhotoPreview] = useState(null)
-  const [photoResult, setPhotoResult] = useState(null)
-  const [photoName, setPhotoName] = useState('')
+  const [draft, setDraft] = useState(null) // editable extracted data
 
-  // url flow state
-  const [url, setUrl] = useState('')
-
-  // manual flow state
-  const [m, setM] = useState({ name: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' })
-
-  // search flow state
+  // search flow
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchDone, setSearchDone] = useState(false)
 
-  const inputRef = useState(null)
+  // manual flow
+  const [m, setM] = useState({ name: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' })
 
-  const doSearch = async () => {
-    if (!searchQ.trim()) return
-    setBusy(true); setErr(''); setSearchResults([]); setSearchDone(false)
-    try {
-      const results = await searchByName(searchQ.trim())
-      setSearchResults(results)
-      setSearchDone(true)
-      if (!results.length) setErr('Ничего не нашлось. Попробуй на английском или добавь через фото.')
-    } catch { setErr('Ошибка поиска. Проверь интернет и попробуй снова.') }
-    setBusy(false)
+  const reset = () => {
+    setMode('main'); setErr(''); setPhotoPreview(null); setDraft(null)
+    setSearchQ(''); setSearchResults([]); setSearchDone(false)
   }
 
-  const pickSearchResult = async (p) => {
-    await onSave([...products, { ...p, thumb: undefined }])
-    setMode('main'); setSearchQ(''); setSearchResults([]); setSearchDone(false); setErr('')
-  }
-
-  const handlePhoto = async (file) => {
+  // ── Photo ──────────────────────────────────────────────────────────────────
+  const handlePhoto = (file) => {
     if (!file) return
-    setErr('')
-    // Preview
+    setErr(''); setDraft(null)
     const reader = new FileReader()
     reader.onload = async (ev) => {
       const dataUrl = ev.target.result
       setPhotoPreview(dataUrl)
-      setMode('photo-confirm')
+      setMode('photo')
       setBusy(true)
       try {
-        // Extract base64 and mime
         const [meta, base64] = dataUrl.split(',')
         const mimeType = meta.match(/:(.*?);/)[1]
         const result = await parseImage(base64, mimeType)
-        setPhotoResult(result)
-        setPhotoName(result.name || '')
+        setDraft({
+          name: result.name || '',
+          brand: result.brand || '',
+          kcal: String(result.per100g?.kcal || ''),
+          protein: String(result.per100g?.protein || ''),
+          fat: String(result.per100g?.fat || ''),
+          carbs: String(result.per100g?.carbs || ''),
+          fiber: String(result.per100g?.fiber || ''),
+        })
       } catch (e) {
-        setErr('Не удалось распознать — попробуй другое фото или добавь вручную.')
-        setMode('main')
+        console.error('parseImage error:', e)
+        setErr(`Ошибка распознавания: ${e.message}. Проверь API ключ или попробуй другое фото.`)
       }
       setBusy(false)
     }
@@ -322,34 +309,41 @@ function ProductsTab({ products, onSave }) {
   }
 
   const savePhoto = async () => {
-    if (!photoResult || !photoName.trim()) return
+    if (!draft?.name.trim()) return
     const p = {
       id: crypto.randomUUID(),
-      name: photoName.trim(),
-      brand: photoResult.brand || '',
+      name: draft.name.trim(),
+      brand: draft.brand || '',
       url: '',
       per100g: {
-        kcal: +photoResult.per100g?.kcal || 0,
-        protein: +photoResult.per100g?.protein || 0,
-        fat: +photoResult.per100g?.fat || 0,
-        carbs: +photoResult.per100g?.carbs || 0,
-        fiber: +photoResult.per100g?.fiber || 0,
+        kcal: +draft.kcal || 0,
+        protein: +draft.protein || 0,
+        fat: +draft.fat || 0,
+        carbs: +draft.carbs || 0,
+        fiber: +draft.fiber || 0,
       }
     }
     await onSave([...products, p])
-    setMode('main'); setPhotoPreview(null); setPhotoResult(null); setPhotoName('')
+    reset()
   }
 
-  const addURL = async () => {
-    if (!url.trim()) return
-    setBusy(true); setErr('')
+  // ── Search ─────────────────────────────────────────────────────────────────
+  const doSearch = async () => {
+    if (!searchQ.trim()) return
+    setBusy(true); setErr(''); setSearchResults([]); setSearchDone(false)
     try {
-      const p = await parseURL(url.trim())
-      await onSave([...products, p]); setUrl(''); setMode('main')
-    } catch { setErr('Не удалось загрузить данные. Попробуй другую ссылку или добавь через фото.') }
+      const results = await searchByName(searchQ.trim())
+      setSearchResults(results); setSearchDone(true)
+    } catch { setErr('Ошибка поиска. Проверь интернет.') }
     setBusy(false)
   }
 
+  const pickResult = async (p) => {
+    await onSave([...products, { ...p, thumb: undefined }])
+    reset()
+  }
+
+  // ── Manual ─────────────────────────────────────────────────────────────────
   const addManual = async () => {
     if (!m.name || !m.kcal) return
     const p = { id: crypto.randomUUID(), name: m.name, brand: m.brand || '', url: '', per100g: { kcal: +m.kcal || 0, protein: +m.protein || 0, fat: +m.fat || 0, carbs: +m.carbs || 0, fiber: +m.fiber || 0 } }
@@ -357,137 +351,155 @@ function ProductsTab({ products, onSave }) {
     setM({ name: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }); setMode('main')
   }
 
+  const draftField = (key, label, type = 'number') => (
+    <div>
+      <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>{label}</label>
+      <input
+        type={type}
+        value={draft[key]}
+        onChange={e => setDraft({ ...draft, [key]: e.target.value })}
+        style={{ width: '100%' }}
+      />
+    </div>
+  )
+
   return (
     <div>
-      {/* ── PHOTO CONFIRM SCREEN ── */}
-      {mode === 'photo-confirm' && (
+
+      {/* ── PHOTO SCREEN ── */}
+      {mode === 'photo' && (
         <div>
-          <button onClick={() => { setMode('main'); setPhotoPreview(null); setPhotoResult(null) }} style={{ fontSize: 13, marginBottom: 16 }}>← Назад</button>
+          <button onClick={reset} style={{ fontSize: 13, marginBottom: 14 }}>← Назад</button>
 
           {photoPreview && (
-            <img src={photoPreview} alt="preview" style={{ width: '100%', maxHeight: 220, objectFit: 'contain', borderRadius: 8, marginBottom: 14, background: 'var(--bg2)' }} />
+            <img src={photoPreview} alt="" style={{ width: '100%', maxHeight: 200, objectFit: 'contain', borderRadius: 8, marginBottom: 12, background: 'var(--bg2)' }} />
           )}
 
-          {busy && <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 16, textAlign: 'center' }}>⏳ Распознаю данные...</p>}
-
-          {photoResult && !busy && (
-            <div>
-              <div className="surface" style={{ marginBottom: 14 }}>
-                <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 10 }}>Распознано (на 100г):</p>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Tag type="kcal" label="ккал" value={photoResult.per100g?.kcal || 0} />
-                  <Tag type="protein" label="Белки" value={photoResult.per100g?.protein || 0} />
-                  <Tag type="fat" label="Жиры" value={photoResult.per100g?.fat || 0} />
-                  <Tag type="carbs" label="Углев." value={photoResult.per100g?.carbs || 0} />
-                  {photoResult.per100g?.fiber > 0 && <Tag type="carbs" label="Клетч." value={photoResult.per100g?.fiber} />}
-                </div>
-              </div>
-
-              <div style={{ marginBottom: 14 }}>
-                <label style={{ fontSize: 12, color: 'var(--text2)', display: 'block', marginBottom: 6 }}>
-                  Как назвать этот продукт? (коротко, как ты его называешь)
-                </label>
-                <input
-                  value={photoName}
-                  onChange={e => setPhotoName(e.target.value)}
-                  placeholder='Например: "Хлопья", "Йогурт натуральный"'
-                  autoFocus
-                  onKeyDown={e => e.key === 'Enter' && savePhoto()}
-                  style={{ width: '100%' }}
-                />
-              </div>
-
-              {err && <p style={{ fontSize: 13, color: 'var(--red)', marginBottom: 10 }}>{err}</p>}
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button onClick={savePhoto} disabled={!photoName.trim()} className="primary" style={{ flex: 1 }}>
-                  Сохранить продукт
-                </button>
-              </div>
+          {busy && (
+            <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text2)', fontSize: 13 }}>
+              ⏳ Считываю данные с фото...
             </div>
           )}
 
-          {err && !photoResult && <p style={{ fontSize: 13, color: 'var(--red)' }}>{err}</p>}
+          {err && (
+            <div style={{ background: 'var(--red-bg)', borderRadius: 8, padding: '12px 14px', marginBottom: 14 }}>
+              <p style={{ fontSize: 13, color: 'var(--red)', margin: 0 }}>{err}</p>
+              <p style={{ fontSize: 12, color: 'var(--red)', margin: '6px 0 0', opacity: 0.8 }}>
+                Можешь заполнить данные вручную ниже или вернуться назад.
+              </p>
+            </div>
+          )}
+
+          {/* Editable form — shown after recognition OR on error so user can fill manually */}
+          {(draft || err) && !busy && (
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 12, color: 'var(--text2)' }}>
+                {draft ? 'Проверь и отредактируй если нужно:' : 'Заполни вручную:'}
+              </p>
+
+              {/* Name + brand */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                <div>
+                  <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>Название *</label>
+                  <input
+                    type="text"
+                    value={draft?.name || ''}
+                    onChange={e => setDraft(d => ({ ...(d || { brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }), name: e.target.value }))}
+                    placeholder="Хлопья, Авокадо..."
+                    autoFocus
+                    style={{ width: '100%' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>Бренд</label>
+                  <input
+                    type="text"
+                    value={draft?.brand || ''}
+                    onChange={e => setDraft(d => ({ ...(d || { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }), brand: e.target.value }))}
+                    placeholder="необязательно"
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </div>
+
+              {/* KBZHU fields */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginBottom: 16 }}>
+                {[['kcal','Ккал'],['protein','Белки г'],['fat','Жиры г'],['carbs','Углев. г'],['fiber','Клетч. г']].map(([key, lbl]) => (
+                  <div key={key}>
+                    <label style={{ fontSize: 10, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>{lbl}</label>
+                    <input
+                      type="number"
+                      value={draft?.[key] || ''}
+                      onChange={e => setDraft(d => ({ ...(d || { name: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }), [key]: e.target.value }))}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <p style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 12 }}>Все значения на 100г</p>
+
+              <button
+                onClick={savePhoto}
+                disabled={!draft?.name?.trim()}
+                className="primary"
+                style={{ width: '100%' }}
+              >
+                Сохранить продукт
+              </button>
+            </div>
+          )}
         </div>
       )}
 
       {/* ── SEARCH SCREEN ── */}
       {mode === 'search' && (
         <div>
-          <button onClick={() => { setMode('main'); setErr(''); setSearchResults([]); setSearchDone(false) }} style={{ fontSize: 13, marginBottom: 16 }}>← Назад</button>
+          <button onClick={reset} style={{ fontSize: 13, marginBottom: 14 }}>← Назад</button>
           <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10 }}>
-            Поиск по базе Open Food Facts — бесплатно, без расхода токенов
+            Поиск по Open Food Facts — бесплатно, без токенов
           </p>
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-            <input
-              value={searchQ}
-              onChange={e => setSearchQ(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !busy && doSearch()}
-              placeholder='Авокадо, авосадо, abacate, avocado...'
-              autoFocus
-            />
+            <input value={searchQ} onChange={e => setSearchQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && doSearch()} placeholder="Авокадо, abacate, avocado..." autoFocus />
             <button onClick={doSearch} disabled={busy || !searchQ.trim()} className="primary" style={{ flexShrink: 0 }}>
               {busy ? '...' : 'Найти'}
             </button>
           </div>
-
           {err && <p style={{ fontSize: 13, color: 'var(--red)', marginBottom: 10 }}>{err}</p>}
-
           {searchResults.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {searchResults.map(p => (
-                <div key={p.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => pickSearchResult(p)}>
-                  {p.thumb && (
-                    <img src={p.thumb} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, flexShrink: 0, background: 'var(--bg2)' }}
-                      onError={e => e.target.style.display = 'none'} />
-                  )}
+                <div key={p.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => pickResult(p)}>
+                  {p.thumb && <img src={p.thumb} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, flexShrink: 0, background: 'var(--bg2)' }} onError={e => e.target.style.display = 'none'} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 500, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
                     {p.brand && <div style={{ fontSize: 11, color: 'var(--text2)' }}>{p.brand}</div>}
                   </div>
-                  <div style={{ display: 'flex', gap: 4, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end', maxWidth: 130 }}>
+                  <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                     <Tag type="kcal" label="ккал" value={p.per100g.kcal} />
                     <Tag type="protein" label="Б" value={p.per100g.protein} />
                     <Tag type="fat" label="Ж" value={p.per100g.fat} />
                     <Tag type="carbs" label="У" value={p.per100g.carbs} />
                   </div>
-                  <span style={{ fontSize: 18, color: 'var(--text3)', flexShrink: 0 }}>+</span>
+                  <span style={{ fontSize: 20, color: 'var(--text3)', flexShrink: 0 }}>+</span>
                 </div>
               ))}
             </div>
           )}
-
           {searchDone && !searchResults.length && !err && (
-            <p style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center', padding: '1rem 0' }}>
-              Ничего не найдено. Попробуй на английском.
+            <p style={{ color: 'var(--text3)', fontSize: 13, textAlign: 'center', padding: '1rem 0' }}>
+              Ничего не найдено. Попробуй на английском или добавь через фото.
             </p>
           )}
-        </div>
-      )}
-
-      {/* ── URL SCREEN ── */}
-      {mode === 'url' && (
-        <div>
-          <button onClick={() => { setMode('main'); setErr('') }} style={{ fontSize: 13, marginBottom: 16 }}>← Назад</button>
-          <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10 }}>
-            Работает для Intermarché (штрихкод в URL). Для Continente и других — лучше использовать фото.
-          </p>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-            <input value={url} onChange={e => setUrl(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && addURL()} placeholder="https://intermarche.pt/product/..." disabled={busy} />
-            <button onClick={addURL} disabled={busy || !url.trim()} className="primary" style={{ flexShrink: 0 }}>
-              {busy ? 'Загружаю...' : 'Добавить'}
-            </button>
-          </div>
-          {err && <p style={{ fontSize: 13, color: 'var(--red)' }}>{err}</p>}
         </div>
       )}
 
       {/* ── MANUAL SCREEN ── */}
       {mode === 'manual' && (
         <div>
-          <button onClick={() => setMode('main')} style={{ fontSize: 13, marginBottom: 16 }}>← Назад</button>
+          <button onClick={() => setMode('main')} style={{ fontSize: 13, marginBottom: 14 }}>← Назад</button>
           <div className="surface">
-            <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, color: 'var(--text2)' }}>Значения на 100г</p>
+            <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, color: 'var(--text2)' }}>Все значения на 100г</p>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
               <input placeholder="Название *" value={m.name} onChange={e => setM({ ...m, name: e.target.value })} />
               <input placeholder="Бренд" value={m.brand} onChange={e => setM({ ...m, brand: e.target.value })} />
@@ -505,73 +517,60 @@ function ProductsTab({ products, onSave }) {
       {/* ── MAIN SCREEN ── */}
       {mode === 'main' && (
         <div>
-          {/* Photo upload — primary method */}
-          <div className="card" style={{ marginBottom: 10, textAlign: 'center', padding: '1.5rem' }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>📷</div>
+          {/* Photo — primary */}
+          <div className="card" style={{ textAlign: 'center', padding: '1.5rem', marginBottom: 10 }}>
+            <div style={{ fontSize: 32, marginBottom: 6 }}>📷</div>
             <p style={{ fontWeight: 500, marginBottom: 4 }}>Добавить по скриншоту</p>
             <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 14, lineHeight: 1.6 }}>
-              Сделай скриншот страницы продукта или таблицы КБЖУ — Claude прочитает цифры автоматически
+              Скриншот страницы продукта или этикетки — Claude считает КБЖУ автоматически
             </p>
-            <label style={{ display: 'inline-block', cursor: 'pointer' }}>
-              <span className="primary" style={{
-                display: 'inline-block', padding: '8px 20px', borderRadius: 7,
-                background: 'var(--text)', color: 'var(--bg)', fontWeight: 500, fontSize: 14
-              }}>
+            <label style={{ cursor: 'pointer' }}>
+              <span style={{ display: 'inline-block', padding: '8px 22px', borderRadius: 7, background: 'var(--text)', color: 'var(--bg)', fontWeight: 500, fontSize: 14 }}>
                 Выбрать фото
               </span>
-              <input
-                type="file"
-                accept="image/*"
-                style={{ display: 'none' }}
-                onChange={e => handlePhoto(e.target.files[0])}
-              />
+              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handlePhoto(e.target.files[0])} />
             </label>
           </div>
 
-          {/* Secondary methods */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 20 }}>
+          {/* Secondary */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 20 }}>
             <button onClick={() => { setMode('search'); setErr('') }} style={{ padding: '10px', fontSize: 13, textAlign: 'center' }}>
               🔍 Поиск<br /><span style={{ fontSize: 11, color: 'var(--text3)' }}>авокадо, яйца...</span>
-            </button>
-            <button onClick={() => setMode('url')} style={{ padding: '10px', fontSize: 13, textAlign: 'center' }}>
-              🔗 Ссылка<br /><span style={{ fontSize: 11, color: 'var(--text3)' }}>Intermarché</span>
             </button>
             <button onClick={() => setMode('manual')} style={{ padding: '10px', fontSize: 13, textAlign: 'center' }}>
               ✏️ Вручную<br /><span style={{ fontSize: 11, color: 'var(--text3)' }}>ввести цифры</span>
             </button>
           </div>
-        </div>
-      )}
 
-      {/* ── PRODUCT LIST ── always visible ── */}
-      {mode === 'main' && (
-        products.length === 0
-          ? <p style={{ color: 'var(--text3)', fontSize: 14, textAlign: 'center', padding: '1rem 0' }}>Продуктов пока нет</p>
-          : <>
-            <p style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>{products.length} продуктов · на 100г</p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {products.map(p => (
-                <div key={p.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-                    {p.brand && <div style={{ fontSize: 12, color: 'var(--text2)' }}>{p.brand}</div>}
+          {/* Product list */}
+          {products.length === 0
+            ? <p style={{ color: 'var(--text3)', fontSize: 14, textAlign: 'center', padding: '1rem 0' }}>Продуктов пока нет</p>
+            : <>
+              <p style={{ fontSize: 12, color: 'var(--text3)', marginBottom: 8 }}>{products.length} продуктов · на 100г</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {products.map(p => (
+                  <div key={p.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                      {p.brand && <div style={{ fontSize: 12, color: 'var(--text2)' }}>{p.brand}</div>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
+                      <Tag type="kcal" label="ккал" value={p.per100g.kcal} />
+                      <Tag type="protein" label="Б" value={p.per100g.protein} />
+                      <Tag type="fat" label="Ж" value={p.per100g.fat} />
+                      <Tag type="carbs" label="У" value={p.per100g.carbs} />
+                    </div>
+                    <button onClick={() => onSave(products.filter(x => x.id !== p.id))} style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 20, padding: '0 4px', flexShrink: 0 }}>×</button>
                   </div>
-                  <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
-                    <Tag type="kcal" label="ккал" value={p.per100g.kcal} />
-                    <Tag type="protein" label="Б" value={p.per100g.protein} />
-                    <Tag type="fat" label="Ж" value={p.per100g.fat} />
-                    <Tag type="carbs" label="У" value={p.per100g.carbs} />
-                  </div>
-                  <button onClick={() => onSave(products.filter(x => x.id !== p.id))} style={{ background: 'none', border: 'none', color: 'var(--text3)', cursor: 'pointer', fontSize: 20, padding: '0 4px', flexShrink: 0 }}>×</button>
-                </div>
-              ))}
-            </div>
-          </>
+                ))}
+              </div>
+            </>
+          }
+        </div>
       )}
     </div>
   )
 }
-
 // ─── LOG TAB ──────────────────────────────────────────────────────────────────
 function LogTab({ products, dayData, onSave }) {
   const [date, setDate] = useState(todayStr())
