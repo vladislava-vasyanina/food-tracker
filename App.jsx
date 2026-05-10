@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 
 // ─── constants ────────────────────────────────────────────────────────────────
 const API = 'https://api.anthropic.com/v1/messages'
-const MODEL = 'claude-sonnet-4-20250514'
+const MODEL = 'claude-sonnet-4-6'
 const FAT_KCAL = 7700
 const KEY = import.meta.env.VITE_ANTHROPIC_KEY || ''
 
