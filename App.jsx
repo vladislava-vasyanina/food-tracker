@@ -8,9 +8,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
 
 // ─── Supabase helpers ─────────────────────────────────────────────────────────
 const rowToProduct = (r) => ({
-  id: r.id, name: r.name, brand: r.brand || '', url: r.url || '',
+  id: r.id, name: r.name, nickname: r.nickname || '', brand: r.brand || '', url: r.url || '',
   per100g: { kcal: r.kcal, protein: r.protein, fat: r.fat, carbs: r.carbs, fiber: r.fiber || 0 }
 })
+
+// Suggest a short nickname from a long USDA product name
+// "Bananas, raw" → "Bananas" / "Chicken breast, cooked" → "Chicken breast"
+const suggestNickname = (name) => {
+  const short = name.split(',')[0].trim()
+  return short.charAt(0).toUpperCase() + short.slice(1)
+}
 
 // ─── Claude API constants ─────────────────────────────────────────────────────
 const API = 'https://api.anthropic.com/v1/messages'
@@ -131,6 +138,29 @@ async function parseURL(url) {
 }
 
 // Parse nutrition facts from an image using Claude vision
+// Compress and convert image to JPEG before sending to API
+// Fixes: large iPhone screenshots, HEIC format, size limit errors
+async function compressImage(dataUrl) {
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => {
+      const MAX = 1600
+      let { width: w, height: h } = img
+      if (w > MAX || h > MAX) {
+        const ratio = Math.min(MAX / w, MAX / h)
+        w = Math.round(w * ratio)
+        h = Math.round(h * ratio)
+      }
+      const canvas = document.createElement('canvas')
+      canvas.width = w; canvas.height = h
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h)
+      resolve(canvas.toDataURL('image/jpeg', 0.85))
+    }
+    img.onerror = () => resolve(dataUrl) // fallback: use original
+    img.src = dataUrl
+  })
+}
+
 async function parseImage(base64, mimeType) {
   const r = await fetch(API, {
     method: 'POST',
@@ -143,7 +173,7 @@ async function parseImage(base64, mimeType) {
         content: [
           {
             type: 'image',
-            source: { type: 'base64', media_type: mimeType, data: base64 }
+            source: { type: 'base64', media_type: 'image/jpeg', data: base64 }
           },
           {
             type: 'text',
@@ -164,7 +194,10 @@ Rules:
       }]
     })
   })
-  if (!r.ok) throw new Error(`API error ${r.status}`)
+  if (!r.ok) {
+    const errBody = await r.json().catch(() => ({}))
+    throw new Error(`API ${r.status}: ${errBody?.error?.message || 'unknown error'}`)
+  }
   const d = await r.json()
   const text = d.content.filter(b => b.type === 'text').map(b => b.text).join('')
   const s = text.indexOf('{'), e = text.lastIndexOf('}')
@@ -273,6 +306,8 @@ function ProductsTab({ products, onSave }) {
   const [searchQ, setSearchQ] = useState('')
   const [searchResults, setSearchResults] = useState([])
   const [searchDone, setSearchDone] = useState(false)
+  const [pendingProduct, setPendingProduct] = useState(null) // product waiting for nickname
+  const [nickname, setNickname] = useState('')
 
   // manual flow
   const [m, setM] = useState({ name: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' })
@@ -280,6 +315,7 @@ function ProductsTab({ products, onSave }) {
   const reset = () => {
     setMode('main'); setErr(''); setPhotoPreview(null); setDraft(null)
     setSearchQ(''); setSearchResults([]); setSearchDone(false)
+    setPendingProduct(null); setNickname('')
   }
 
   // ── Photo ──────────────────────────────────────────────────────────────────
@@ -288,16 +324,17 @@ function ProductsTab({ products, onSave }) {
     setErr(''); setDraft(null)
     const reader = new FileReader()
     reader.onload = async (ev) => {
-      const dataUrl = ev.target.result
-      setPhotoPreview(dataUrl)
+      const rawDataUrl = ev.target.result
+      setPhotoPreview(rawDataUrl)
       setMode('photo')
       setBusy(true)
       try {
-        const [meta, base64] = dataUrl.split(',')
-        const mimeType = meta.match(/:(.*?);/)[1]
-        const result = await parseImage(base64, mimeType)
+        const compressed = await compressImage(rawDataUrl)
+        const [, base64] = compressed.split(',')
+        const result = await parseImage(base64, 'image/jpeg')
         setDraft({
           name: result.name || '',
+          nickname: suggestNickname(result.name || ''),
           brand: result.brand || '',
           kcal: String(result.per100g?.kcal || ''),
           protein: String(result.per100g?.protein || ''),
@@ -319,14 +356,12 @@ function ProductsTab({ products, onSave }) {
     const p = {
       id: crypto.randomUUID(),
       name: draft.name.trim(),
+      nickname: (draft.nickname || '').trim(),
       brand: draft.brand || '',
       url: '',
       per100g: {
-        kcal: +draft.kcal || 0,
-        protein: +draft.protein || 0,
-        fat: +draft.fat || 0,
-        carbs: +draft.carbs || 0,
-        fiber: +draft.fiber || 0,
+        kcal: +draft.kcal || 0, protein: +draft.protein || 0,
+        fat: +draft.fat || 0, carbs: +draft.carbs || 0, fiber: +draft.fiber || 0,
       }
     }
     await onSave([...products, p])
@@ -344,17 +379,25 @@ function ProductsTab({ products, onSave }) {
     setBusy(false)
   }
 
-  const pickResult = async (p) => {
-    await onSave([...products, { ...p, thumb: undefined }])
+  // Picking a search result → go to nickname step
+  const pickResult = (p) => {
+    setPendingProduct(p)
+    setNickname(suggestNickname(p.name))
+    setMode('nickname')
+  }
+
+  const saveWithNickname = async () => {
+    if (!pendingProduct) return
+    await onSave([...products, { ...pendingProduct, nickname: nickname.trim(), thumb: undefined }])
     reset()
   }
 
   // ── Manual ─────────────────────────────────────────────────────────────────
   const addManual = async () => {
     if (!m.name || !m.kcal) return
-    const p = { id: crypto.randomUUID(), name: m.name, brand: m.brand || '', url: '', per100g: { kcal: +m.kcal || 0, protein: +m.protein || 0, fat: +m.fat || 0, carbs: +m.carbs || 0, fiber: +m.fiber || 0 } }
+    const p = { id: crypto.randomUUID(), name: m.name, nickname: m.nickname || '', brand: m.brand || '', url: '', per100g: { kcal: +m.kcal || 0, protein: +m.protein || 0, fat: +m.fat || 0, carbs: +m.carbs || 0, fiber: +m.fiber || 0 } }
     await onSave([...products, p])
-    setM({ name: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }); setMode('main')
+    setM({ name: '', nickname: '', brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }); setMode('main')
   }
 
   const draftField = (key, label, type = 'number') => (
@@ -371,6 +414,42 @@ function ProductsTab({ products, onSave }) {
 
   return (
     <div>
+
+      {/* ── NICKNAME SCREEN (after search result pick) ── */}
+      {mode === 'nickname' && pendingProduct && (
+        <div>
+          <button onClick={reset} style={{ fontSize: 13, marginBottom: 14 }}>← Назад</button>
+          <div className="surface" style={{ marginBottom: 14 }}>
+            <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 6 }}>Найденный продукт:</p>
+            <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{pendingProduct.name}</p>
+            {pendingProduct.brand && <p style={{ fontSize: 12, color: 'var(--text3)' }}>{pendingProduct.brand}</p>}
+            <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+              <Tag type="kcal" label="ккал" value={pendingProduct.per100g.kcal} />
+              <Tag type="protein" label="Б" value={pendingProduct.per100g.protein} />
+              <Tag type="fat" label="Ж" value={pendingProduct.per100g.fat} />
+              <Tag type="carbs" label="У" value={pendingProduct.per100g.carbs} />
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 14 }}>
+            <p style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Как ты будешь его называть?</p>
+            <p style={{ fontSize: 12, color: 'var(--text2)', marginBottom: 12, lineHeight: 1.6 }}>
+              Дай продукту короткое имя, по которому будешь его искать. Например: "Курица", "Овсянка", "Греческий йогурт"
+            </p>
+            <input
+              value={nickname}
+              onChange={e => setNickname(e.target.value)}
+              placeholder="Моё название..."
+              autoFocus
+              onKeyDown={e => e.key === 'Enter' && saveWithNickname()}
+              style={{ width: '100%', marginBottom: 12, fontSize: 15 }}
+            />
+            <button onClick={saveWithNickname} disabled={!nickname.trim()} className="primary" style={{ width: '100%' }}>
+              Добавить в базу
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── PHOTO SCREEN ── */}
       {mode === 'photo' && (
@@ -403,29 +482,20 @@ function ProductsTab({ products, onSave }) {
                 {draft ? 'Проверь и отредактируй если нужно:' : 'Заполни вручную:'}
               </p>
 
-              {/* Name + brand */}
+              {/* Name + brand + nickname */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
                 <div>
-                  <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>Название *</label>
-                  <input
-                    type="text"
-                    value={draft?.name || ''}
-                    onChange={e => setDraft(d => ({ ...(d || { brand: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }), name: e.target.value }))}
-                    placeholder="Хлопья, Авокадо..."
-                    autoFocus
-                    style={{ width: '100%' }}
-                  />
+                  <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>Оригинальное название *</label>
+                  <input type="text" value={draft?.name || ''} onChange={e => setDraft(d => ({ ...(d || {}), name: e.target.value }))} placeholder="Как на упаковке" autoFocus style={{ width: '100%' }} />
                 </div>
                 <div>
                   <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>Бренд</label>
-                  <input
-                    type="text"
-                    value={draft?.brand || ''}
-                    onChange={e => setDraft(d => ({ ...(d || { name: '', kcal: '', protein: '', fat: '', carbs: '', fiber: '' }), brand: e.target.value }))}
-                    placeholder="необязательно"
-                    style={{ width: '100%' }}
-                  />
+                  <input type="text" value={draft?.brand || ''} onChange={e => setDraft(d => ({ ...(d || {}), brand: e.target.value }))} placeholder="необязательно" style={{ width: '100%' }} />
                 </div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ fontSize: 11, color: 'var(--text2)', display: 'block', marginBottom: 3 }}>Моё название (для поиска) *</label>
+                <input type="text" value={draft?.nickname || ''} onChange={e => setDraft(d => ({ ...(d || {}), nickname: e.target.value }))} placeholder='Например: "Хлопья", "Йогурт"' style={{ width: '100%' }} />
               </div>
 
               {/* KBZHU fields */}
@@ -514,8 +584,11 @@ function ProductsTab({ products, onSave }) {
           <div className="surface">
             <p style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, color: 'var(--text2)' }}>Все значения на 100г</p>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
-              <input placeholder="Название *" value={m.name} onChange={e => setM({ ...m, name: e.target.value })} />
-              <input placeholder="Бренд" value={m.brand} onChange={e => setM({ ...m, brand: e.target.value })} />
+              <input placeholder="Оригинальное название *" value={m.name} onChange={e => setM({ ...m, name: e.target.value })} />
+              <input placeholder="Моё название (для поиска)" value={m.nickname || ''} onChange={e => setM({ ...m, nickname: e.target.value })} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 8, marginBottom: 8 }}>
+              <input placeholder="Бренд (необязательно)" value={m.brand} onChange={e => setM({ ...m, brand: e.target.value })} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginBottom: 10 }}>
               {[['kcal', 'Ккал *'], ['protein', 'Белки'], ['fat', 'Жиры'], ['carbs', 'Углев.'], ['fiber', 'Клетч.']].map(([k, lbl]) => (
@@ -564,7 +637,12 @@ function ProductsTab({ products, onSave }) {
                 {products.map(p => (
                   <div key={p.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                      <div style={{ fontWeight: 500, fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {p.nickname || p.name}
+                      </div>
+                      {p.nickname && p.nickname !== p.name && (
+                        <div style={{ fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                      )}
                       {p.brand && <div style={{ fontSize: 12, color: 'var(--text2)' }}>{p.brand}</div>}
                     </div>
                     <div style={{ display: 'flex', gap: 5, flexShrink: 0 }}>
@@ -596,8 +674,26 @@ function LogTab({ products, dayData, onSave }) {
 
   const log = dayData[date] || { items: [], burned: 0 }
 
-  const fuzzy = q.length > 1
-    ? products.filter(p => p.name.toLowerCase().includes(q.toLowerCase()) || (p.brand && p.brand.toLowerCase().includes(q.toLowerCase()))).slice(0, 6)
+  // Smart search: nickname first, then original name
+  // Supports prefix match ("кур" → "Курица") and substring match
+  const fuzzy = q.length > 0
+    ? products
+        .map(p => {
+          const qLow = q.toLowerCase()
+          const nick = (p.nickname || '').toLowerCase()
+          const name = p.name.toLowerCase()
+          const brand = (p.brand || '').toLowerCase()
+          let score = 0
+          if (nick.startsWith(qLow)) score = 4
+          else if (nick.includes(qLow)) score = 3
+          else if (name.startsWith(qLow)) score = 2
+          else if (name.includes(qLow) || brand.includes(qLow)) score = 1
+          return { p, score }
+        })
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 7)
+        .map(x => x.p)
     : []
 
   const pick = (p) => { setSel(p); setQ(`${p.name}${p.brand ? ' (' + p.brand + ')' : ''}`); setOpen(false); setMatchErr('') }
@@ -642,7 +738,10 @@ function LogTab({ products, dayData, onSave }) {
                 <div style={{ position: 'absolute', top: 'calc(100% + 3px)', left: 0, right: 0, background: 'var(--bg)', border: '0.5px solid var(--border2)', borderRadius: 8, zIndex: 50, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', overflow: 'hidden' }}>
                   {fuzzy.map(p => (
                     <div key={p.id} onMouseDown={() => pick(p)} style={{ padding: '9px 14px', cursor: 'pointer', fontSize: 13, borderBottom: '0.5px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontWeight: 500 }}>{p.name} {p.brand && <span style={{ color: 'var(--text2)', fontWeight: 400 }}>{p.brand}</span>}</span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontWeight: 500 }}>{p.nickname || p.name}</div>
+                        {p.nickname && <div style={{ fontSize: 11, color: 'var(--text3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>}
+                      </div>
                       <span style={{ color: 'var(--text3)', fontSize: 11, flexShrink: 0, marginLeft: 8 }}>{p.per100g.kcal} ккал/100г</span>
                     </div>
                   ))}
@@ -1078,7 +1177,7 @@ export default function App() {
 
     for (const p of added) {
       await supabase.from('products').insert({
-        id: p.id, user_id: uid, name: p.name, brand: p.brand || '', url: p.url || '',
+        id: p.id, user_id: uid, name: p.name, nickname: p.nickname || '', brand: p.brand || '', url: p.url || '',
         kcal: p.per100g.kcal, protein: p.per100g.protein, fat: p.per100g.fat,
         carbs: p.per100g.carbs, fiber: p.per100g.fiber || 0,
       })
