@@ -172,37 +172,45 @@ Rules:
   return JSON.parse(text.slice(s, e + 1))
 }
 
-// Search Open Food Facts by product name — completely FREE, no Claude API needed
+// Search USDA FoodData Central — official US nutrition database, ~2M products
+// Free API, same data Google and Apple Health use for generic foods
 async function searchByName(query) {
-  const url = `https://world.openfoodfacts.org/cgi/search.pl?search_terms=${encodeURIComponent(query)}&search_simple=1&action=process&json=1&page_size=10&fields=product_name,product_name_pt,product_name_en,brands,nutriments,image_thumb_url`
-  const r = await fetch(url, { signal: AbortSignal.timeout(8000) })
-  if (!r.ok) throw new Error(`Search error ${r.status}`)
-  const data = await r.json()
-  if (!data.products?.length) return []
+  const params = new URLSearchParams({
+    query,
+    api_key: 'rq6dj2oo784IX2OVkwnk8ttUhkjhrk5vFTqQCpaC',
+    pageSize: '20',
+    dataType: 'Foundation,SR Legacy,Branded',
+  })
 
-  return data.products
-    .filter(p => p.product_name || p.product_name_pt || p.product_name_en)
-    .map(p => {
-      const n = p.nutriments || {}
-      let kcal = n['energy-kcal_100g'] || n['energy-kcal'] || 0
-      if (!kcal && n['energy_100g']) kcal = Math.round(n['energy_100g'] / 4.184)
-      if (!kcal && n['energy-kj_100g']) kcal = Math.round(n['energy-kj_100g'] / 4.184)
-      return {
-        id: crypto.randomUUID(),
-        name: p.product_name_pt || p.product_name || p.product_name_en || '',
-        brand: p.brands || '',
-        url: '',
-        thumb: p.image_thumb_url || '',
-        per100g: {
-          kcal: Math.round(kcal),
-          protein: +(n.proteins_100g || n.proteins || 0).toFixed(1),
-          fat: +(n.fat_100g || n.fat || 0).toFixed(1),
-          carbs: +(n.carbohydrates_100g || n.carbohydrates || 0).toFixed(1),
-          fiber: +(n.fiber_100g || n.fiber || 0).toFixed(1),
-        }
+  const r = await fetch(`https://api.nal.usda.gov/fdc/v1/foods/search?${params}`, {
+    signal: AbortSignal.timeout(10000)
+  })
+  if (!r.ok) throw new Error(`USDA error ${r.status}`)
+  const data = await r.json()
+  if (!data.foods?.length) return []
+
+  const getNutrient = (nutrients, id) => {
+    const n = nutrients?.find(n => n.nutrientId === id || +n.nutrientNumber === id)
+    return n ? +(+n.value || 0).toFixed(1) : 0
+  }
+
+  return data.foods
+    .map(f => ({
+      id: crypto.randomUUID(),
+      name: f.description,
+      brand: f.brandOwner || f.brandName || '',
+      dataType: f.dataType, // Foundation/SR Legacy = generic, Branded = packaged
+      url: '',
+      thumb: '',
+      per100g: {
+        kcal: Math.round(getNutrient(f.foodNutrients, 1008)),
+        protein: getNutrient(f.foodNutrients, 1003),
+        fat: getNutrient(f.foodNutrients, 1004),
+        carbs: getNutrient(f.foodNutrients, 1005),
+        fiber: getNutrient(f.foodNutrients, 1079),
       }
-    })
-    .filter(p => p.name)
+    }))
+    .filter(p => p.name && p.per100g.kcal > 0)
 }
 
 async function aiMatch(query, products) {
@@ -460,18 +468,25 @@ function ProductsTab({ products, onSave }) {
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
             <input value={searchQ} onChange={e => setSearchQ(e.target.value)} onKeyDown={e => e.key === 'Enter' && !busy && doSearch()} placeholder="Авокадо, abacate, avocado..." autoFocus />
             <button onClick={doSearch} disabled={busy || !searchQ.trim()} className="primary" style={{ flexShrink: 0 }}>
-              {busy ? '...' : 'Найти'}
+              {busy ? '...' : 'Find'}
             </button>
           </div>
+          <p style={{ fontSize: 11, color: 'var(--text3)', marginBottom: 10 }}>
+            🇺🇸 USDA database — search in English for best results: "banana", "chicken breast", "avocado"
+          </p>
           {err && <p style={{ fontSize: 13, color: 'var(--red)', marginBottom: 10 }}>{err}</p>}
           {searchResults.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {searchResults.map(p => (
                 <div key={p.id} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }} onClick={() => pickResult(p)}>
-                  {p.thumb && <img src={p.thumb} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, flexShrink: 0, background: 'var(--bg2)' }} onError={e => e.target.style.display = 'none'} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 500, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-                    {p.brand && <div style={{ fontSize: 11, color: 'var(--text2)' }}>{p.brand}</div>}
+                    <div style={{ fontSize: 11, color: 'var(--text2)', display: 'flex', gap: 6, marginTop: 2 }}>
+                      {p.brand && <span>{p.brand}</span>}
+                      {(p.dataType === 'Foundation' || p.dataType === 'SR Legacy') && (
+                        <span style={{ color: 'var(--green)', fontWeight: 500 }}>✓ USDA verified</span>
+                      )}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
                     <Tag type="kcal" label="ккал" value={p.per100g.kcal} />
