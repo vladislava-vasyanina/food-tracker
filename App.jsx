@@ -752,11 +752,154 @@ function AuthScreen() {
   )
 }
 
+// ─── HISTORY TAB ──────────────────────────────────────────────────────────────
+function HistoryTab({ dayData }) {
+  // Collect all months that have any data
+  const allDates = Object.keys(dayData).filter(d => {
+    const log = dayData[d]
+    return log.items.length > 0 || (log.burned || 0) > 0
+  }).sort((a, b) => b.localeCompare(a)) // newest first
+
+  // Derive sorted list of unique months: "YYYY-MM"
+  const months = [...new Set(allDates.map(d => d.slice(0, 7)))].sort((a, b) => b.localeCompare(a))
+
+  // Start on most recent month with data (or current month)
+  const defaultMonth = months[0] || new Date().toISOString().slice(0, 7)
+  const [currentMonth, setCurrentMonth] = useState(defaultMonth)
+
+  const monthIdx = months.indexOf(currentMonth)
+  const canPrev = monthIdx < months.length - 1 // older
+  const canNext = monthIdx > 0                  // newer
+
+  // Build rows for current month: every day in the month
+  const [year, mon] = currentMonth.split('-').map(Number)
+  const daysInMonth = new Date(year, mon, 0).getDate()
+  const rows = Array.from({ length: daysInMonth }, (_, i) => {
+    const day = String(i + 1).padStart(2, '0')
+    const date = `${currentMonth}-${day}`
+    const log = dayData[date] || { items: [], burned: 0 }
+    const consumed = Math.round(sumK(log.items).kcal)
+    const burned = log.burned || 0
+    const balance = consumed - burned
+    const hasData = log.items.length > 0 || burned > 0
+    return { date, consumed, burned, balance, hasData }
+  }).reverse() // newest day first
+
+  const withData = rows.filter(r => r.hasData)
+  const totalConsumed = withData.reduce((a, r) => a + r.consumed, 0)
+  const totalBurned = withData.reduce((a, r) => a + r.burned, 0)
+  const totalBalance = totalBurned - totalConsumed // positive = deficit, negative = surplus
+
+  const monthLabel = new Date(year, mon - 1, 1).toLocaleDateString('en', { month: 'long', year: 'numeric' })
+
+  if (months.length === 0) return (
+    <p style={{ color: 'var(--text3)', fontSize: 14, textAlign: 'center', padding: '2rem 0' }}>
+      No history yet. Start logging meals!
+    </p>
+  )
+
+  return (
+    <div>
+      {/* Month navigation */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+        <button onClick={() => setCurrentMonth(months[monthIdx + 1])} disabled={!canPrev}
+          style={{ padding: '6px 14px', fontSize: 16, flexShrink: 0 }}>‹</button>
+        <div style={{ flex: 1, textAlign: 'center' }}>
+          <div style={{ fontWeight: 600, fontSize: 16, textTransform: 'capitalize' }}>{monthLabel}</div>
+          <div style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>{withData.length} days tracked</div>
+        </div>
+        <button onClick={() => setCurrentMonth(months[monthIdx - 1])} disabled={!canNext}
+          style={{ padding: '6px 14px', fontSize: 16, flexShrink: 0 }}>›</button>
+      </div>
+
+      {/* Month summary row */}
+      {withData.length > 0 && (
+        <div className="surface" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6, marginBottom: 16, textAlign: 'center' }}>
+          {[
+            { label: 'Consumed', val: totalConsumed },
+            { label: 'Burned', val: totalBurned },
+            { label: totalBalance > 0 ? 'Deficit' : totalBalance < 0 ? 'Surplus' : 'Balance', val: Math.abs(totalBalance), isDeficit: totalBalance > 0, isSurplus: totalBalance < 0 },
+          ].map(c => (
+            <div key={c.label}>
+              <div style={{ fontSize: 10, color: c.isDeficit ? 'var(--green)' : c.isSurplus ? 'var(--red)' : 'var(--text2)', marginBottom: 3 }}>{c.label}</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: c.isDeficit ? 'var(--green)' : c.isSurplus ? 'var(--red)' : 'var(--text)' }}>
+                {c.isSurplus ? '+' : ''}{c.val}
+              </div>
+              <div style={{ fontSize: 10, color: 'var(--text3)' }}>kcal</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Day rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {/* Header */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 80px 90px', gap: 4, padding: '0 4px', marginBottom: 4 }}>
+          {['Date', 'Eaten', 'Burned', 'Balance'].map((h, i) => (
+            <div key={h} style={{ fontSize: 11, fontWeight: 500, color: 'var(--text3)', textAlign: i === 0 ? 'left' : 'right' }}>{h}</div>
+          ))}
+        </div>
+
+        {rows.map(row => {
+          const isDeficit = row.hasData && row.burned > 0 && row.balance < 0
+          const isSurplus = row.hasData && row.burned > 0 && row.balance > 0
+          const balanceColor = isDeficit ? 'var(--green)' : isSurplus ? 'var(--red)' : 'var(--text3)'
+          const dt = new Date(row.date + 'T12:00')
+          const isToday = row.date === todayStr()
+          const isWeekend = dt.getDay() === 0 || dt.getDay() === 6
+
+          return (
+            <div key={row.date} style={{
+              display: 'grid', gridTemplateColumns: '1fr 80px 80px 90px', gap: 4,
+              padding: '9px 8px', borderRadius: 8, fontSize: 13,
+              background: isToday ? 'var(--blue-bg)' : row.hasData ? 'var(--bg)' : 'transparent',
+              border: row.hasData ? '0.5px solid var(--border)' : 'none',
+              opacity: row.hasData ? 1 : 0.35,
+            }}>
+              <div>
+                <span style={{ fontWeight: isToday ? 600 : isWeekend ? 500 : 400, color: isToday ? 'var(--blue)' : 'var(--text)' }}>
+                  {dt.toLocaleDateString('en', { weekday: 'short', day: 'numeric' })}
+                </span>
+                {isToday && <span style={{ fontSize: 10, color: 'var(--blue)', marginLeft: 5 }}>today</span>}
+              </div>
+              <div style={{ textAlign: 'right', color: row.hasData ? 'var(--text)' : 'var(--text3)' }}>
+                {row.hasData ? row.consumed : '—'}
+              </div>
+              <div style={{ textAlign: 'right', color: row.hasData ? 'var(--text)' : 'var(--text3)' }}>
+                {row.burned || (row.hasData ? '—' : '—')}
+              </div>
+              <div style={{ textAlign: 'right', fontWeight: 500, color: balanceColor }}>
+                {row.hasData && row.burned > 0
+                  ? (isSurplus ? `+${Math.abs(row.balance)}` : `${Math.abs(row.balance)}`)
+                  : '—'}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Month selector dots */}
+      {months.length > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 20, flexWrap: 'wrap' }}>
+          {months.map(m => (
+            <button key={m} onClick={() => setCurrentMonth(m)} style={{
+              width: 8, height: 8, borderRadius: '50%', padding: 0, border: 'none',
+              background: m === currentMonth ? 'var(--text)' : 'var(--border2)',
+              cursor: 'pointer', minWidth: 'unset',
+            }} title={new Date(m + '-01').toLocaleDateString('en', { month: 'long', year: 'numeric' })} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── APP ROOT ─────────────────────────────────────────────────────────────────
 const DEFAULT_TARGETS = { kcal: 1800, protein: 90, fat: 60, carbs: 180 }
 const TABS = [
   { id: 'today', label: 'Today' },
   { id: 'log', label: 'Log' },
+  { id: 'history', label: 'History' },
   { id: 'stats', label: 'Stats' },
   { id: 'products', label: 'Products' },
   { id: 'settings', label: 'Settings' },
@@ -840,6 +983,7 @@ export default function App() {
       <div style={{ padding: '20px 20px 80px' }}>
         {tab === 'today' && <TodayTab dayData={dayData} onSave={saveDayData} targets={targets} />}
         {tab === 'log' && <LogTab products={products} dayData={dayData} onSave={saveDayData} />}
+        {tab === 'history' && <HistoryTab dayData={dayData} />}
         {tab === 'stats' && <StatisticsTab dayData={dayData} />}
         {tab === 'products' && <ProductsTab products={products} onSave={saveProducts} />}
         {tab === 'settings' && <SettingsTab targets={targets} onSaveTargets={saveTargets} onLogout={logout} userEmail={session.user.email} />}
